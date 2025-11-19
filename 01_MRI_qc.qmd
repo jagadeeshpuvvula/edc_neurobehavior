@@ -1,0 +1,212 @@
+---
+title: "01_MRI_qc"
+format: html
+---
+
+
+# %% BASC outcome data
+#participants with basc scores
+basc_out<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
+  clean_names() |>
+  select(1, 2, starts_with("basc")) |>
+  filter(visit == "P4")
+
+
+# %% age standardize MRI data
+#MRI morphometry
+mri_df<- read_csv("~/Documents/k99_home/data/HOME MRI 12y/HOME_Study_FreeSurfer-CSV/asegstats.csv") |>
+  clean_names() 
+
+#age at MRI
+mri_age<- read_csv("~/Documents/k99_home/data/HOME MRI 12y/MRI_age.csv") |>
+  clean_names() |> select(c(1,2))
+
+mri_std<- left_join(mri_df, mri_age, by= "subject_id") |> drop_na() |>
+  filter(subject_id %in% basc_out$subject_id)
+
+# Function to residualize (remove age effect)
+residualize <- function(y, age) {
+  model <- lm(y ~ age)
+  return(residuals(model))
+}
+
+# Apply age standardization to MRI variables (columns 2-67)
+mri_standardized <- mri_std %>%
+  mutate(across(
+    .cols = 2:67,  # MRI variables
+    .fns = ~residualize(.x, .data[[names(mri_std)[68]]])  # Use age column
+  ))
+
+# If you want to add back the mean (so values are on original scale, just age-adjusted)
+mri_standardized <- mri_std |>
+  mutate(across(
+    .cols = 2:67,
+    .fns = ~{
+      resid <- residualize(.x, .data[[names(mri_std)[68]]])
+      resid + mean(.x, na.rm = TRUE)
+    }
+  ))
+
+
+# %%
+#MRS data
+mrs_df<- read_xlsx("~/Documents/k99_home/data/HOME MRI 12y/MRS/HOME_Study_MRS_Concentrations_AiminPenn_DeID.xlsx") |>
+  clean_names() 
+
+#MRI variables suggested by Kim
+mri_vars<- read_xlsx("~/Documents/k99_home/data/HOME MRI 12y/FreeSurferVariables.xlsx", sheet = "Aseg_recommendation") |>
+  clean_names() |>
+  select(c(1,2)) |>
+  filter(x2 == "EXPLORE")
+
+
+# %% train a model to predict basc using mri/mrs fetures
+model_df<- left_join(basc_out, mri_standardized, by ="subject_id") |>
+  left_join(mrs_df, by = "subject_id") |>
+  drop_na()
+
+
+# %% train a model
+#use variables from 32 to 104 to predict values of variables from 3 to 31
+# Prepare data
+X_matrix <- as.matrix(model_df %>% select(32:104))
+Y_matrix <- as.matrix(model_df %>% select(3:31))
+
+# Remove predictors based on multiple criteria
+valid_predictors <- apply(X_matrix, 2, function(x) {
+  # Check if variance is greater than 0
+  has_variance <- sd(x, na.rm = TRUE) > 0
+  
+  # Check if less than 50% of values are the same
+  if (length(x) > 0) {
+    value_counts <- table(x)
+    max_freq <- max(value_counts)
+    less_than_50_same <- (max_freq / length(x)) < 0.5
+  } else {
+    less_than_50_same <- FALSE
+  }
+  
+  # Check if less than 50% are zeros
+  less_than_50_zeros <- (sum(x == 0) / length(x)) < 0.5
+  
+  # Keep predictor only if all conditions are met
+  return(has_variance & less_than_50_same & less_than_50_zeros)
+})
+
+X_matrix_filtered <- X_matrix[, valid_predictors]
+
+cat("Removed", sum(!valid_predictors), "predictors\n")
+cat("Remaining predictors:", ncol(X_matrix_filtered), "\n")
+
+# Check for multicollinearity by computing correlation matrix
+cor_matrix <- cor(X_matrix_filtered)
+high_cor <- which(abs(cor_matrix) > 0.95 & cor_matrix != 1, arr.ind = TRUE)
+
+if (nrow(high_cor) > 0) {
+  cat("\nFound highly correlated predictors (r > 0.95)\n")
+  # Remove one of each highly correlated pair
+  to_remove <- unique(high_cor[, 2])
+  if (length(to_remove) > 0) {
+    X_matrix_filtered <- X_matrix_filtered[, -to_remove]
+    cat("Removed", length(to_remove), "highly correlated predictors\n")
+  }
+}
+
+cat("Final number of predictors:", ncol(X_matrix_filtered), "\n")
+
+# Store original column names before scaling
+original_names <- colnames(X_matrix_filtered)
+
+# Standardize predictors (z-score)
+X_scaled <- scale(X_matrix_filtered)
+
+# Restore original column names
+colnames(X_scaled) <- original_names
+
+# Standardize outcomes (z-score)
+Y_scaled <- scale(Y_matrix)
+
+# Initialize results storage
+beta_table <- data.frame()
+
+# Fit linear regression for each outcome with standardized variables
+for (i in 1:ncol(Y_scaled)) {
+  cat("Processing outcome:", colnames(Y_matrix)[i], "\n")
+  
+  # Fit linear model
+  lm_model <- lm(Y_scaled[, i] ~ X_scaled)
+  
+  # Extract standardized coefficients (excluding intercept)
+  coefficients <- coef(lm_model)[-1]
+  
+  # Remove "X_scaled" prefix from names
+  names(coefficients) <- gsub("^X_scaled", "", names(coefficients))
+  
+  # Check for NA coefficients
+  na_count <- sum(is.na(coefficients))
+  if (na_count > 0) {
+    cat("  Warning:", na_count, "NA coefficients in this model\n")
+  }
+  
+  # Create dataframe - only include non-NA coefficients
+  beta_df <- data.frame(
+    Feature = names(coefficients),
+    Std_Beta = as.numeric(coefficients),
+    Outcome = colnames(Y_matrix)[i]
+  )
+  
+  beta_table <- bind_rows(beta_table, beta_df)
+}
+
+# Check for NAs in beta_table
+na_count <- sum(is.na(beta_table$Std_Beta))
+cat("\nTotal NA values in beta_table:", na_count, "out of", nrow(beta_table), 
+    "(", round(100 * na_count / nrow(beta_table), 2), "%)\n")
+
+# Remove rows with NA values
+beta_table_clean <- beta_table %>%
+  filter(!is.na(Std_Beta))
+
+cat("Rows after removing NAs:", nrow(beta_table_clean), "\n")
+
+# Calculate average absolute standardized beta per feature to rank them
+feature_ranking <- beta_table_clean %>%
+  group_by(Feature) %>%
+  summarise(Avg_Abs_Std_Beta = mean(abs(Std_Beta)), .groups = "drop") %>%
+  arrange(desc(Avg_Abs_Std_Beta))
+
+# Prepare data for heatmap with all features
+heatmap_data <- beta_table_clean %>%
+  mutate(Feature = factor(Feature, levels = rev(feature_ranking$Feature)))
+
+# Find symmetric limits for the color scale
+max_abs_beta <- max(abs(heatmap_data$Std_Beta))
+color_limit <- min(max_abs_beta, 1)  # Cap at 1 or use actual max if smaller
+
+# Create heatmap with symmetric color scale
+ggplot(heatmap_data, aes(x = Outcome, y = Feature, fill = Std_Beta)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    name = "Beta",
+    limits = c(-color_limit, color_limit),
+    oob = scales::squish
+  ) +
+  labs(
+    title = " ",
+    x = "BASC-P4",
+    y = "MRI/MRS features"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave("~/Documents/k99_home/results/lm_heatmap.tiff", width = 12, height = 10, dpi = 300)

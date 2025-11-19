@@ -1,1 +1,4 @@
 
+# %%
+library(pacman)
+pacman::p_load(tidyverse, janitor, readxl, haven, caret, xgboost)
