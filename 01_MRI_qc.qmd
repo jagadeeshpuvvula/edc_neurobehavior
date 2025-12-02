@@ -59,6 +59,14 @@ mri_vars<- read_xlsx("~/Documents/k99_home/data/HOME MRI 12y/FreeSurferVariables
   select(c(1,2)) |>
   filter(x2 == "EXPLORE")
 
+# %%
+#export MRI/MRS/MRI vars for next steps in rds format
+save(
+  mri_standardized,
+  mrs_df,
+  mri_vars,
+  file = "~/Documents/k99_home/data/processed/mri_objects.rda"
+)
 
 # %% train a model to predict basc using mri/mrs fetures
 model_df<- left_join(basc_out, mri_standardized, by ="subject_id") |>
