@@ -1,0 +1,88 @@
+---
+title: "Untitled"
+format: html
+---
+
+
+# %%
+pbde_df <- haven::read_sas("~/Documents/data/pbde.sas7bdat") |> clean_names() |>
+  mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
+                across(contains("flg_lod"), factor)) |>
+  rename(flg_lod = flg_lod_lp,
+         result = result_lp) |>
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod_lp))
+
+# %% Exposure and cotinine biomarkers
+phthalate_df <- haven::read_sas("~/Documents/data/phthbpa.sas7bdat") |> clean_names() |>
+  mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
+                across(contains("flg_lod"), factor)) |>
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))
+
+ope_df <- haven::read_sas("~/Documents/data/fr.sas7bdat") |> clean_names() |>
+  mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
+                across(contains("flg_lod"), factor)) |>
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))
+
+cot_df <- haven::read_sas("~/Documents/data/ct.sas7bdat") |> clean_names() |>
+  mutate(result = if_else(is.na(result), result_machine, result)) |>
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod)) |>
+  mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
+                across(contains("flg_lod"), factor)) 
+
+cov_df<- haven::read_sas("~/Documents/data/covariates.sas7bdat") |> clean_names() |>
+  select(-c(race_cd, ethnicity_cd, mom_race_cd, mom_race, mom_ethnicity_cd, hh_income,
+         mom_ethnicity, hh_income_cd, mari_st_cd, gest_diabetes, gest_hypertension,
+         mom_edu_cd, preeclampsia, gest_cardio_comp, parity_cat, gest_age_method, fish_consumption_cd)) 
+
+
+
+
+# %% count of biomarker measures above and below LOD
+counts_all <- bind_rows(
+  ope_df        %>% mutate(dataset = "ope"),
+  phthalate_df  %>% mutate(dataset = "phthalate"),
+  pbde_df       %>% mutate(dataset = "pbde")
+) %>%
+  count(dataset, analyte_code, visit) %>%   # count for each dataset × analyte × visit
+  pivot_wider(
+    names_from = visit,
+    values_from = n,
+    values_fill = 0
+  )
+
+# %% correlations between exposures and covariates
+biomarker_df <- bind_rows(
+  phthalate_df |> mutate(exposure = "phthalates"),
+  ope_df |> mutate(exposure = "organophosphate esters"),
+  cot_df |> mutate(exposure = "cotinine")
+) |>
+  mutate(analyte_visit = paste(analyte_code, visit, sep = "_")) |>
+  select(-c(analyte_code, visit)) 
+
+cov_pred_df<- cov_df |>
+  select(c(1:7, 24, 48)) |>
+  mutate(subject_id = as.factor(subject_id))
+
+lod_values <- biomarker_df |>
+  mutate(analyte = sub("_.*$", "", analyte_visit)) |>
+  select(analyte, analyte_lod) |>
+  distinct() 
+
+lod_map <- setNames(lod_values$analyte_lod, lod_values$analyte)
+
+
+
+# %%
+#use values in the variable result;
+#dont use result_original since it has NAs for values below LOD & result_imputed which has values on log scale (gives negative values after imputation)
+
+mi_result <- truncated_multiple_imputation_sl_parallel(
+  biomarker_df = biomarker_df,
+  cov_pred_df = cov_pred_df,
+  analyte_lod_map = lod_map,
+  m = 5,
+  n_cores = 12,  
+  verbose = TRUE
+)
+
+imputed_data_1 <- get_imputed_dataset(mi_result, 1)
