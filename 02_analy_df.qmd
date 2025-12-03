@@ -34,9 +34,6 @@ cov_df<- haven::read_sas("~/Documents/data/covariates.sas7bdat") |> clean_names(
          mom_ethnicity, hh_income_cd, mari_st_cd, gest_diabetes, gest_hypertension,
          mom_edu_cd, preeclampsia, gest_cardio_comp, parity_cat, gest_age_method, fish_consumption_cd)) 
 
-
-
-
 # %% count of biomarker measures above and below LOD
 counts_all <- bind_rows(
   ope_df        %>% mutate(dataset = "ope"),
@@ -70,11 +67,9 @@ lod_values <- biomarker_df |>
 
 lod_map <- setNames(lod_values$analyte_lod, lod_values$analyte)
 
-
-
 # %%
 #use values in the variable result;
-#dont use result_original since it has NAs for values below LOD & result_imputed which has values on log scale (gives negative values after imputation)
+#dont use result_original since it has NAs for values below LOD & result_imputed which has values on log scale (gives negative values)
 
 mi_result <- truncated_multiple_imputation_sl_parallel(
   biomarker_df = biomarker_df,
