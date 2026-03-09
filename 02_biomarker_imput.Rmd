@@ -113,7 +113,7 @@ save(result, file = "~/Documents/HOME_DNAm/covariate_imputation.RData")
 write_csv(result$imputed_data, "~/Documents/HOME_DNAm/covariate_imputation.csv")
 ```
 
-
+#use imputed covariate data for imputing biomarker data
 
 # %% count of biomarker measures above and below LOD
 ```{r}
