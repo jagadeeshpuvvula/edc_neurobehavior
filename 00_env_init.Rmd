@@ -1,0 +1,13 @@
+---
+title: "00_env_init"
+author: "Jagadeesh Puvvula"
+date: "2026-03-09"
+output: pdf_document
+---
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, readxl, haven, caret, xgboost, SuperLearner, randomForest,
+               mice)
+```
+
