@@ -1,0 +1,269 @@
+---
+title: "Preprocessing DNA methylation data EPIC array"
+author: "Puvvula"
+date: "2025-12-24"
+output: pdf_document
+---
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, haven)
+```
+
+#read metadata
+```{r}
+#low quality on original and repeat: 79570, 47315, 48087, 48087, 50695, 43374, 87028, 16716, 32700, 46349, 66865, 95834, 49157, 87028, 43374, 46349, 66865, 95834, 48087, 50695, 47315, 79570, 32700, 16716, 
+#low quality not repeated: 46864, 21266, 24648, 
+
+#low quality on original but ok on repeat: 48031, 33204, 44919
+#57128, 86041, 57128, 86041,  not sure about "Two sections red; included in repeat"
+
+meta <- readxl::read_xlsx(
+  "~/Documents/k99_home/DNA_Methylation_FileList_Birth_Cord_DeID.xlsx"
+) |>
+  janitor::clean_names() |>
+  dplyr::filter(
+    !subject_id %in% c(
+      79570, 47315, 48087, 50695, 43374, 87028, 16716, 32700,
+      46349, 66865, 95834, 49157, 46864, 21266, 24648),
+    !comments %in% c("Low quality scanned data",
+                     "Include in repeat",
+                     "Two sections red; include in repeat")
+  )
+
+#check that each subject has 2 observations (red and grn)
+subject_check <- meta |>
+  count(subject_id, name = "n_obs") |>
+  filter(n_obs != 2)
+
+#I see 301 participants with data, but EHP paper says 266 with cord blood DNAm data: https://pubmed.ncbi.nlm.nih.gov/35266797/ 
+```
+
+#check if all with DNAm have outcomes
+```{r}
+basc<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
+  janitor::clean_names() |>
+  filter(visit %in% c("P3", "P4")) |>
+  select(1, 2, starts_with("basc"))
+
+#93 participants with DNAm data do not have BASC data
+dnam_miss_basc <- meta |>
+  distinct(subject_id) |>
+  anti_join(
+    basc |> distinct(subject_id),
+    by = "subject_id"
+  )
+```
+
+#check participants with exposure during pregnancy
+```{r}
+pbde_exp <- read_sas("~/Documents/data/pbde.sas7bdat") |>
+  janitor::clean_names() |>
+  filter(visit %in% c("16W", "26W")) 
+
+ope_exp <- read_sas("~/Documents/data/fr.sas7bdat") |>
+  janitor::clean_names() |>
+  filter(visit %in% c("16W", "26W", "BIRTH")) 
+
+phth_exp <- read_sas("~/Documents/data/phthbpa.sas7bdat") |>
+  janitor::clean_names() |>
+  filter(visit %in% c("16W", "26W", "BIRTH"),
+         !analyte_code %in% c("BPA")) 
+
+#unique participants with exposures
+n_unique_subjects <- bind_rows(
+  pbde_exp |> select(subject_id),
+  ope_exp  |> select(subject_id),
+  phth_exp |> select(subject_id)
+) |>
+  distinct(subject_id) |>
+  nrow()
+
+#exposures with DNAm data
+n_subjects_in_meta <- bind_rows(
+  pbde_exp |> select(subject_id),
+  ope_exp  |> select(subject_id),
+  phth_exp |> select(subject_id)
+) |>
+  distinct(subject_id) |>
+  semi_join(
+    meta |> distinct(subject_id),
+    by = "subject_id"
+  ) |>
+  nrow()
+
+#exposures with BASC data
+n_subjects_in_basc <- bind_rows(
+  pbde_exp |> select(subject_id),
+  ope_exp  |> select(subject_id),
+  phth_exp |> select(subject_id)
+) |>
+  distinct(subject_id) |>
+  semi_join(
+    basc |> distinct(subject_id),
+    by = "subject_id"
+  ) |>
+  nrow()
+
+#analytic data with exposures, DNAm , and BASC
+n_subjects_analytic <- bind_rows(
+  pbde_exp |> select(subject_id),
+  ope_exp  |> select(subject_id),
+  phth_exp |> select(subject_id)
+) |>
+  distinct(subject_id) |>
+  semi_join(
+    meta |> distinct(subject_id),
+    by = "subject_id"
+  ) |>
+  semi_join(
+    basc |> distinct(subject_id),
+    by = "subject_id"
+  ) |>
+  nrow()
+```
+
+#preprocessing DNAm data
+```{r}
+# Base folder
+file_path <- "~/Documents/k99_home/data/DNAm/dnam_data"  
+
+# List all .idat files recursively (relative paths)
+all_files_rel <- list.files(path = file_path, pattern = "\\.idat$", recursive = TRUE)
+
+# Create mapping of file_name -> full path with double slash
+file_map <- data.frame(
+  file_name = basename(all_files_rel),
+  full_path = paste0(file_path, "/", all_files_rel),  # intentional double slash
+  stringsAsFactors = FALSE
+)
+
+# Build the combined metadata table
+cb_dnam_ref <- meta |>
+  left_join(file_map, by = "file_name") |>  
+  mutate(
+    file_type = case_when(
+      grepl("Grn", file_name) ~ "file_1",
+      grepl("Red", file_name) ~ "file_2"
+    ),
+    sample_id = str_remove(file_name, "_(Grn|Red)\\.idat$"),
+    folder = paste0(vapply(full_path, dirname, character(1)), "/")
+  ) |>
+  pivot_wider(
+    id_cols = c(subject_id, sample_id),
+    names_from  = file_type,
+    values_from = c(file_name, folder),
+    names_glue = "{file_type}_{.value}"
+  ) |>
+  mutate(
+    folder_location = file_1_folder,
+    folder_mismatch = file_1_folder != file_2_folder,
+    sub_dir = basename(folder_location),
+    batch = paste0("Batch", str_extract(sub_dir, "[^-]+$"))
+  ) |>
+  select(-c(file_1_folder, file_2_folder, 
+            file_1_file_name, file_2_file_name, sub_dir,
+            folder_mismatch))
+```
+
+```{r}
+basenames_df_t <- cb_dnam_ref |>
+  dplyr::select(sample_id, folder_location) |>
+  rename(Sample_ID = sample_id) |>
+  arrange(Sample_ID)
+
+# Sort pheno_data_matched_t by basename
+pheno_data_matched_t <- cb_dnam_ref |>
+  dplyr::select(subject_id, sample_id, batch) |>
+  rename(
+    participant_id = subject_id,
+    basename = sample_id
+  ) |>
+  arrange(basename)
+
+#check if they match sequence
+all(basenames_df_t$Sample_ID == pheno_data_matched_t$basename)
+```
+
+#CpGs to drop - Skip this and use updated information provided by Arzu (Feb 2026)
+```{r}
+#https://pubmed.ncbi.nlm.nih.gov/27330998/ (McCartney 2016)
+#https://pubmed.ncbi.nlm.nih.gov/23314698/ (Chen 2013)
+
+chen_crp<- read_csv("~/Documents/HOME_DNAm/drop_cpg/cross_reactive_probes.csv")
+chen_failed_probes <- read_csv("~/Documents/HOME_DNAm/drop_cpg/failed_probes.csv")
+chen_snp_probes <- read_csv("~/Documents/HOME_DNAm/drop_cpg/snp_probes_minfi.csv")
+
+mcc_polymorphic<- read_delim("~/Documents/HOME_DNAm/drop_cpg/mccarthy_polymorphic.txt",
+                             delim = "\t", col_names = TRUE) |> select(c(1)) |>clean_names()
+mcc_hybri_targ<- read_delim("~/Documents/HOME_DNAm/drop_cpg/mccarthy_cross_hybri_targ.txt",
+                             delim = "\t", col_names = TRUE)
+mcc_hybri_non_targ <- read_delim("~/Documents/HOME_DNAm/drop_cpg/mccarthy_corss_hybri_non_targ.txt",
+                                 delim = "\t", col_names = TRUE)
+
+all_cpgs_to_drop <- bind_rows(chen_crp, chen_failed_probes, chen_snp_probes,
+                              mcc_polymorphic, mcc_hybri_targ, mcc_hybri_non_targ) |>
+  distinct()
+
+write_csv(all_cpgs_to_drop, "~/Documents/HOME_DNAm/drop_cpg/all_cpgs_to_drop.csv")
+```
+
+#cpgs to drop - Arzu's list (Feb 2026) - includes all filters from Zhou et al. 2017 (https://pubmed.ncbi.nlm.nih.gov/27924034/) 
+```{r}
+Zhou <- readRDS("~/Documents/k99_home/arzu_cpgs_to_drop/EPIC.hg19.manifest.rds")
+
+Zhou_tbl <- tibble(
+  cpg = names(Zhou),
+  MASK_general = GenomicRanges::mcols(Zhou)$MASK_general,
+  chrm_A = as.character(GenomicRanges::seqnames(Zhou))
+) %>%
+  filter(
+    MASK_general == FALSE,
+    !chrm_A %in% c("chrM", "chrX", "chrY"),
+    str_starts(cpg, "cg")        
+  ) %>%
+  select(cpg)
+
+write_csv(Zhou_tbl, "~/Documents/k99_home/arzu_cpgs_to_drop/cpgs_to_keep.csv")
+```
+
+
+#preprocessing steps
+#Step-1: Read IDAT files (raw data)
+#Step-2: Calculate detection p-values 
+#Step-3: Identify failed probes: low-quality probes defined as detection p < 1.0E-7 or number of beads <3 in at least 5% of my total samples
+#Step-4: Sample QC: Remove samples with >5% failed probes
+#Step-5: Drop failed probes
+#Step-6: Drop probes with detection rate <95%
+#Step-7: Extremely low intensity of bisulfite conversion probes (less than 3 × standard deviation (SD) of the intensity across samples below the mean intensity)
+#Step-8: Noob normalization (background correction and dye bias)
+#step-9: BMIQ normalization to correct for probe type bias
+#step-10: Batch correction using ComBat
+#step-11: Estimate cell proportions using Bakulski et al. Epigenetics 2016 refrence "FlowSorted.CordBlood.450k" to get leucocytes (granulocytes, monocytes, B cells, natural killer [NK] cells, CD8+ T-lymphocytes and CD4+ T-lymphocytes)
+#Step-12: Remove sex chromosome probes
+#Step-13: Remove all probes listed here: "~/Documents/k99_home/dnam_prep_code/all_cpgs_to_drop.csv"
+#Step-14: Compute M-values: M= log2(beta / (1-beta) )
+
+
+#process
+```{r}
+process_methylation_data(
+  basenames_df = basenames_df_t, 
+  pheno_data = pheno_data_matched_t, 
+  output_folder = "~/Documents/k99_home/dnam_prep_data", 
+  array_type = "EPIC",  
+  detection_pval = 1e-6,
+  beadcount_threshold = 3,
+  sample_cutoff = 0.05,
+  probe_detection_rate = 0.95,
+  bisulfite_sd_threshold = 3,
+  cpgs_to_keep_file = "~/Documents/k99_home/arzu_cpgs_to_drop/cpgs_to_keep.csv",
+  compute_mvalues = FALSE,
+  apply_bmiq = TRUE,
+  apply_combat = TRUE,
+  batch_variable = "batch",
+  estimate_cell_proportions = TRUE,
+  verbose = TRUE
+)
+```
+
