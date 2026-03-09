@@ -5,18 +5,18 @@ date: "2026-03-09"
 output: pdf_document
 ---
 
-```{r}
 # %% BASC outcome data
 #participants with basc scores
+```{r}
 basc_out<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
   clean_names() |>
   select(1, 2, starts_with("basc")) |>
   filter(visit == "P4")
 ```
 
-```{r}
 # %% age standardize MRI data
 #MRI morphometry
+```{r}
 mri_df<- read_csv("~/Documents/k99_home/data/HOME MRI 12y/HOME_Study_FreeSurfer-CSV/asegstats.csv") |>
   clean_names() 
 
@@ -51,9 +51,8 @@ mri_standardized <- mri_std |>
   ))
 ```
 
-```{r}
-# %%
 #MRS data
+```{r}
 mrs_df<- read_xlsx("~/Documents/k99_home/data/HOME MRI 12y/MRS/HOME_Study_MRS_Concentrations_AiminPenn_DeID.xlsx") |>
   clean_names() 
 
@@ -64,10 +63,8 @@ mri_vars<- read_xlsx("~/Documents/k99_home/data/HOME MRI 12y/FreeSurferVariables
   filter(x2 == "EXPLORE")
 ```
 
-
-```{r}
-# %%
 #export MRI/MRS/MRI vars for next steps in rds format
+```{r}
 save(
   mri_standardized,
   mrs_df,
@@ -76,18 +73,16 @@ save(
 )
 ```
 
-
-```{r}
 # %% train a model to predict basc using mri/mrs fetures
+```{r}
 model_df<- left_join(basc_out, mri_standardized, by ="subject_id") |>
   left_join(mrs_df, by = "subject_id") |>
   drop_na()
 ```
 
-
-```{r}
 # %% train a model
 #use variables from 32 to 104 to predict values of variables from 3 to 31
+```{r}
 # Prepare data
 X_matrix <- as.matrix(model_df %>% select(32:104))
 Y_matrix <- as.matrix(model_df %>% select(3:31))
@@ -204,9 +199,8 @@ max_abs_beta <- max(abs(heatmap_data$Std_Beta))
 color_limit <- min(max_abs_beta, 1)  # Cap at 1 or use actual max if smaller
 ```
 
-
-```{r}
 # Create heatmap with symmetric color scale
+```{r}
 ggplot(heatmap_data, aes(x = Outcome, y = Feature, fill = Std_Beta)) +
   geom_tile(color = "white", linewidth = 0.5) +
   scale_fill_gradient2(

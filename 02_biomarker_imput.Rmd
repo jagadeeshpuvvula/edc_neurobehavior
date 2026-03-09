@@ -12,7 +12,8 @@ pbde_df <- haven::read_sas("~/Documents/data/pbde.sas7bdat") |> clean_names() |>
                 across(contains("flg_lod"), factor)) |>
   rename(flg_lod = flg_lod_lp,
          result = result_lp) |>
-  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod_lp))
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod_lp)) |>
+  filter(visit %in% c("16W", "26W"))
 ```
 
 #pthalate, OPE, cotinine, and covariates
@@ -20,24 +21,99 @@ pbde_df <- haven::read_sas("~/Documents/data/pbde.sas7bdat") |> clean_names() |>
 phthalate_df <- haven::read_sas("~/Documents/data/phthbpa.sas7bdat") |> clean_names() |>
   mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
                 across(contains("flg_lod"), factor)) |>
-  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))|>
+  filter(visit %in% c("16W", "26W"))
 
 ope_df <- haven::read_sas("~/Documents/data/fr.sas7bdat") |> clean_names() |>
   mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
                 across(contains("flg_lod"), factor)) |>
-  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))
+  select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))|>
+  filter(visit %in% c("16W", "26W"))
 
 cot_df <- haven::read_sas("~/Documents/data/ct.sas7bdat") |> clean_names() |>
   mutate(result = if_else(is.na(result), result_machine, result)) |>
   select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod)) |>
   mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
-                across(contains("flg_lod"), factor)) 
+                across(contains("flg_lod"), factor)) |>
+  filter(visit %in% c("16W", "26W"))
 
 cov_df<- haven::read_sas("~/Documents/data/covariates.sas7bdat") |> clean_names() |>
   select(-c(race_cd, ethnicity_cd, mom_race_cd, mom_race, mom_ethnicity_cd, hh_income,
          mom_ethnicity, hh_income_cd, mari_st_cd, gest_diabetes, gest_hypertension,
          mom_edu_cd, preeclampsia, gest_cardio_comp, parity_cat, gest_age_method, fish_consumption_cd)) 
 ```
+
+#covariate imputation
+```{r}
+cov_df <- read_sas("~/Documents/data/covariates.sas7bdat") |>
+  clean_names() |>
+  select(c(1,2,4,6,12,15,17,34,54,55,57,64))|>
+  mutate(
+    race = case_when(
+      race == "White or Caucasian" ~ "White",
+      race == "Black or African American" ~ "Black",
+      race %in% c("Asian, Pacific Islander, or Native Hawaiian",
+                  "Other/Multiracial") ~ "Other",
+      TRUE ~ NA_character_),
+    ethnicity = case_when(
+      ethnicity == "Hispanic" ~ "Hispanic",
+      ethnicity == "Not Hispanic" ~ "Non-Hispanic",
+      TRUE ~ NA_character_),
+    income_group = case_when(
+      hh_income %in% c(
+        "Under $5,000","Between $5,000 and $10,000","Between $10,000 and $15,000",
+        "Between $15,000 and $20,000", "Between $20,000 and $25,000",
+        "Between $25,000 and $30,000","Between $30,000 and $40,000") ~ "Low",
+      hh_income %in% c(
+        "Between $40,000 and $50,000","Between $50,000 and $60,000",
+        "Between $60,000 and $70,000","Between $70,000 and $80,000") ~ "Middle",
+      hh_income %in% c(
+        "Between $80,000 and $90,000","Between $90,000 and $100,000",
+        "Between $100,000 and $110,000","Between $110,000 and $120,000",
+        "Between $120,000 and $130,000","Between $130,000 and $140,000",
+        "Between $140,000 and $150,000","Over $150,000") ~ "High"),
+    mom_edu = case_when(
+      mom_edu %in% c(
+      "8th grade or less","Some high School (Grades 9, 10, 11, 12)",
+      "High school diploma (completed grade 12)",
+      "GED","Technical or trade school") ~ "L1",
+      mom_edu == "Some college or 2 year degree" ~ "L2",
+      mom_edu == "Bachelor's degree" ~ "L3",
+      mom_edu == "Graduate or professional school" ~ "L4",
+      TRUE ~ NA_character_),
+    mari_st = case_when(
+      mari_st == "Married, living together" ~ "Marr_liv_toget",
+      mari_st %in% c("Married, living apart",
+                     "Not married, but living with someone",
+                     "Not married, living alone") ~ "Other",
+      TRUE ~ NA_character_),
+    fish_baseline = case_when(
+      fish_consumption_cd %in% c("1","2", "3") ~ "L1",
+      fish_consumption_cd %in% c("4") ~ "L2",
+      fish_consumption_cd %in% c("5") ~ "L3",
+      fish_consumption_cd %in% c("6") ~ "L4",
+      TRUE ~ NA_character_),
+  ) |>
+  mutate(across(where(is.character), as.factor)) |>
+  select(-c(hh_income, ethnicity, fish_consumption_cd))
+
+#impute missing covariates
+categorical_vars <- c("sex", "race", "mari_st", "mom_edu",
+                      "income_group", "fish_baseline")
+continuous_vars <- c("home_score_total", "mom_age_deliv", "gest_age",
+                     "parity_n")
+
+# Run imputation
+result <- impute_with_superlearner(cov_df,
+                                   categorical_vars = categorical_vars, 
+                                   max_predictors = 10,
+                                   verbose = TRUE)
+
+save(result, file = "~/Documents/HOME_DNAm/covariate_imputation.RData")
+write_csv(result$imputed_data, "~/Documents/HOME_DNAm/covariate_imputation.csv")
+```
+
+
 
 # %% count of biomarker measures above and below LOD
 ```{r}
