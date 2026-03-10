@@ -22,7 +22,8 @@ phthalate_df <- haven::read_sas("~/Documents/data/phthbpa.sas7bdat") |> clean_na
   mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
                 across(contains("flg_lod"), factor)) |>
   select(c(subject_id, visit, analyte_code, result, flg_lod, analyte_lod))|>
-  filter(visit %in% c("16W", "26W"))
+  filter(visit %in% c("16W", "26W"),
+         !analyte_code %in% c("MCNP", "MCOP")) 
 
 ope_df <- haven::read_sas("~/Documents/data/fr.sas7bdat") |> clean_names() |>
   mutate(across(any_of(c("subject_id", "visit", "analyte_code")), factor),
@@ -41,6 +42,29 @@ cov_df<- haven::read_sas("~/Documents/data/covariates.sas7bdat") |> clean_names(
   select(-c(race_cd, ethnicity_cd, mom_race_cd, mom_race, mom_ethnicity_cd, hh_income,
          mom_ethnicity, hh_income_cd, mari_st_cd, gest_diabetes, gest_hypertension,
          mom_edu_cd, preeclampsia, gest_cardio_comp, parity_cat, gest_age_method, fish_consumption_cd)) 
+```
+
+# %% count of biomarker measures above and below LOD
+```{r}
+counts_all <- bind_rows(
+  ope_df        |> mutate(dataset = "OPEs"),
+  phthalate_df  |> mutate(dataset = "Phthalate"),
+  pbde_df       |> mutate(dataset = "PBDEs")
+) |>
+  filter(subject_id %in% basc_out$subject_id) |>
+  group_by(dataset, analyte_code, visit) |>
+  summarise(
+    n = n(),
+    pct_lod = mean(flg_lod == 1, na.rm = TRUE) * 100,
+    .groups = "drop"
+  ) |>
+  mutate(n_label = sprintf("%d (%.1f%%)", n, pct_lod)) |>
+  select(dataset, analyte_code, visit, n_label) |>
+  pivot_wider(
+    names_from = visit,
+    values_from = n_label,
+    values_fill = "0 (0%)"
+  )
 ```
 
 #covariate imputation
@@ -113,22 +137,14 @@ save(result, file = "~/Documents/HOME_DNAm/covariate_imputation.RData")
 write_csv(result$imputed_data, "~/Documents/HOME_DNAm/covariate_imputation.csv")
 ```
 
+#load covariate data
 #use imputed covariate data for imputing biomarker data
-
-# %% count of biomarker measures above and below LOD
 ```{r}
-counts_all <- bind_rows(
-  ope_df        %>% mutate(dataset = "ope"),
-  phthalate_df  %>% mutate(dataset = "phthalate"),
-  pbde_df       %>% mutate(dataset = "pbde")
-) %>%
-  count(dataset, analyte_code, visit) %>%   # count for each dataset × analyte × visit
-  pivot_wider(
-    names_from = visit,
-    values_from = n,
-    values_fill = 0
-  )
+cov<- read_csv("~/Documents/k99_home/data/covariate_imputation.csv") |>
+  filter(subject_id %in% basc_out$subject_id) |>
+  mutate(subject_id = as.factor(subject_id)) 
 ```
+
 
 # %% correlations between exposures and covariates
 ```{r}
@@ -138,7 +154,8 @@ biomarker_df <- bind_rows(
   cot_df |> mutate(exposure = "cotinine")
 ) |>
   mutate(analyte_visit = paste(analyte_code, visit, sep = "_")) |>
-  select(-c(analyte_code, visit)) 
+  select(-c(analyte_code, visit))  |>
+  filter(subject_id %in% basc_out$subject_id)
 
 cov_pred_df<- cov_df |>
   select(c(1:7, 24, 48)) |>
@@ -155,16 +172,31 @@ lod_map <- setNames(lod_values$analyte_lod, lod_values$analyte)
 #use values in the variable result;
 #dont use result_original since it has NAs for values below LOD & result_imputed which has values on log scale (gives negative values)
 ```{r}
-mi_result <- truncated_multiple_imputation_sl_parallel(
-  biomarker_df = biomarker_df,
-  cov_pred_df = cov_pred_df,
-  analyte_lod_map = lod_map,
-  m = 5,
-  n_cores = 12,  
-  verbose = TRUE
-)
-
-imputed_data_1 <- get_imputed_dataset(mi_result, 1)
+result <- truncated_single_imputation_sl(
+  biomarker_df      = biomarker_df,
+  cov_pred_df       = cov,
+  lower_bounds      = 0.00001, 
+  maxit_truncated   = 100,
+  sl_library        = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                        "SL.xgboost", "SL.mean"),
+  log_transform     = FALSE,
+  adaptive_weight   = TRUE,
+  track_convergence = TRUE,
+  verbose           = TRUE
+  )
 ```
+
+```{r}
+imputed     <- get_imputed_data(result) |> select(c(1:6))
+metrics     <- get_quality_metrics(result, NULL)
+sl_only     <- get_quality_metrics(result, "success")
+fallbacks   <- metrics %>% filter(imputation_method == "conventional")
+
+save(imputed, metrics, sl_only, fallbacks, result,
+     file = "~/Documents/k99_home/data/exposure_impu/exposure_imputation.RData")
+
+write_csv(imputed, "~/Documents/k99_home/data/exposure_impu/imputed_exposures.csv")
+```
+
 
 
