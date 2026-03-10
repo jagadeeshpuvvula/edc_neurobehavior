@@ -1,0 +1,197 @@
+---
+title: "05_prelim_res"
+author: "Jagadeesh Puvvula"
+date: "2026-03-10"
+output: pdf_document
+---
+
+#load clean analytic data
+```{r}
+analy_df <- read_csv("~/Documents/k99_home/data/analytic_data_for_analysis.csv") |>
+  select(-c(visit)) |>
+  mutate(across(where(is.character), as.factor),
+         parity_n = as.factor(parity_n)) |>
+  rename(
+    # BASC
+    "BASC-BSI"       = basc_bsi,
+    "BASC-EXT"       = basc_ext,
+    "BASC-INZ"       = basc_inz,
+    # Covariates
+    "Sex"            = sex,
+    "Race"           = race,
+    "Marital-Status" = mari_st,
+    "Mom-Education"  = mom_edu,
+    "HOME-Score"     = home_score_total,
+    "Mom-Age"        = mom_age_deliv,
+    "Gest-Age"       = gest_age,
+    # OPEs
+    "BCEP"           = BCEtP,
+    "DNBP"           = DBuP,
+    "DPHP"           = DPhP,
+    "BDCIPP"         = BDCPP
+  )
+```
+
+#summaries of variables of interest
+```{r}
+cont_summary <- analy_df |>
+  select(28:60) |>
+  select(where(is.numeric)) |>
+  summarise(across(
+    everything(),
+    ~paste0(
+      round(median(.x, na.rm = TRUE), 2),
+      " (",
+      round(quantile(.x, 0.25, na.rm=TRUE), 2), ", ",
+      round(quantile(.x, 0.75, na.rm=TRUE), 2), ")"
+    )
+  )) |>
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "Median_IQR"
+  ) |>
+  mutate(
+    n_obs = sapply(analy_df[28:60][, variable], function(x) sum(!is.na(x)))
+  )
+
+cat_summary <- analy_df |>
+  select(28:60) |>
+  select(where(is.factor)) |>
+  pivot_longer(everything(),
+               names_to = "variable",
+               values_to = "value") |>
+  count(variable, value) |>
+  group_by(variable) |>
+  mutate(
+    percent = round(100 * n / sum(n),1),
+    result = paste0(n, " (", percent, "%)")
+  ) |>
+  select(variable, category = value, result)
+```
+
+#correlation heatmap between exposures and outcome variables
+```{r}
+# --- 2. Compute Correlation Matrix ---
+cor_matrix <- analy_df |>
+  select(28:60) |>
+  select(where(is.numeric)) |>
+  cor(use = "pairwise.complete.obs")
+
+cor_matrix_melt <- melt(cor_matrix)
+
+# --- 3. Prepare Long Format (exposure-outcome pairs only) ---
+outcomes <- c("BASC-BSI", "BASC-EXT", "BASC-INZ")
+
+cor_long_filtered <- cor_matrix_melt %>%
+  rename(correlation = value) %>%
+  mutate(
+    Var1       = toupper(gsub("_", "-", as.character(Var1))),
+    Var2       = toupper(gsub("_", "-", as.character(Var2))),
+    size_value = 1
+  ) %>%
+  # Keep only pairs where exactly one variable is an outcome
+  filter(
+    (Var1 %in% outcomes & !Var2 %in% outcomes) |
+    (!Var1 %in% outcomes & Var2 %in% outcomes)
+  ) %>%
+  # filter(abs(correlation) > 0.1) %>%   # uncomment to reduce clutter
+  select(Var1, Var2, size_value, correlation)
+
+# --- 4. Define Variable Groupings ---
+group_list <- list(
+  OPEs       = c("DPHP", "DNBP", "BCEP", "BDCIPP"),
+  PBDEs      = c("PBDE100", "PBDE153", "PBDE28", "PBDE47", "PBDE99"),
+  Phenols    = c("BPA"),
+  Phthalates = c("MBP", "MBZP", "MCPP", "MECPP", "MEHHP", "MEHP", "MEOHP", "MEP", "MIBP"),
+  Other      = c("COTININE"),
+  Covariates = c("HOME-SCORE", "MOM-AGE", "GEST-AGE"),
+  BASC       = c("BASC-BSI", "BASC-EXT", "BASC-INZ")
+)
+
+# --- 5. Sector Order ---
+all_sectors <- unique(c(cor_long_filtered$Var1, cor_long_filtered$Var2))
+
+sector_order_filtered <- unlist(group_list, use.names = FALSE)
+sector_order_filtered <- sector_order_filtered[sector_order_filtered %in% all_sectors]
+
+# Diagnostic — uncomment if sector name errors appear
+# print(setdiff(all_sectors, unlist(group_list)))  # in data but missing from group_list
+# print(setdiff(unlist(group_list), all_sectors))  # in group_list but not in data
+
+# --- 6. Color Assignment ---
+manual_palette <- c(
+  OPEs       = "olivedrab4",
+  PBDEs      = "mediumblue",
+  Phenols    = "#17BECF",
+  Phthalates = "green4",
+  Other      = "#FF00FF",
+  Covariates = "#7F7F7F",
+  BASC       = "darkgoldenrod3"
+)
+
+grid_colors_final <- setNames(rep(NA, length(all_sectors)), all_sectors)
+for (g_name in names(group_list)) {
+  match_vars <- group_list[[g_name]][group_list[[g_name]] %in% all_sectors]
+  grid_colors_final[match_vars] <- manual_palette[g_name]
+}
+
+group_colors_filtered <- grid_colors_final[sector_order_filtered]
+group_colors_filtered <- group_colors_filtered[!is.na(group_colors_filtered)]
+
+# --- 7. Chord Color Scale ---
+col_fun <- colorRamp2(c(-0.18, 0, 0.18), c("darkred", "#FFFFFF00", "darkblue"))
+
+# --- 8. Save Plot ---
+output_path <- path.expand("~/Documents/k99_home/results/")
+if (!dir.exists(output_path)) dir.create(output_path, recursive = TRUE)
+output_file <- paste0(output_path, "correlation_chord_diagram.tiff")
+
+tiff(output_file, res = 300, width = 12.5, height = 12.5, units = "in", bg = "white")
+
+par(mar = c(1, 1, 1, 1))
+circos.par(start.degree = 90, gap.degree = 2, track.margin = c(0.01, 0.01))
+
+chordDiagram(
+  cor_long_filtered[, c("Var1", "Var2", "size_value")],
+  order             = sector_order_filtered,
+  transparency      = 0,
+  col               = col_fun(cor_long_filtered$correlation),
+  annotationTrack   = "grid",
+  grid.col          = group_colors_filtered,
+  preAllocateTracks = list(track.height = 0.1),
+  directional       = 0,
+  symmetric         = TRUE,
+  reduce            = 0
+)
+
+circos.track(
+  track.index = 1,
+  panel.fun = function(x, y) {
+    xlim        <- get.cell.meta.data("xlim")
+    ylim        <- get.cell.meta.data("ylim")
+    sector.name <- get.cell.meta.data("sector.index")
+    label_color <- group_colors_filtered[sector.name]
+    circos.text(
+      mean(xlim), ylim[1] + 0.1,
+      sector.name,
+      facing     = "clockwise",
+      niceFacing = TRUE,
+      adj        = c(0, 0.5),
+      cex        = 0.9,
+      col        = label_color
+    )
+  },
+  bg.border = NA
+)
+
+circos.clear()
+invisible(dev.off())
+message(paste("Saved to:", output_file))
+```
+
+
+
+
+
+

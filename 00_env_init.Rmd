@@ -7,7 +7,9 @@ output: pdf_document
 
 ```{r}
 library(pacman)
-pacman::p_load(tidyverse, janitor, readxl, haven, caret, xgboost, SuperLearner, randomForest,
-               mice)
+pacman::p_load(tidyverse, janitor, readxl, haven, reshape2,
+               circlize, colorRamp2
+               #caret, xgboost, SuperLearner, randomForest,mice
+               )
 ```
 

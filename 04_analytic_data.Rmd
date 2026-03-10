@@ -16,7 +16,18 @@ basc_out<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
 #imputed covariate data 
 ```{r}
 cov<- read_csv("~/Documents/k99_home/data/covariate_imputation.csv") |>
-  filter(subject_id %in% basc_out$subject_id) |> clean_names() 
+  filter(subject_id %in% basc_out$subject_id) |> clean_names() |>
+  mutate(parity_n = ceiling(parity_n)) |>
+  mutate(
+    parity_n = case_when(
+      parity_n == 0 ~ "0",
+      parity_n == 1 ~ "1",
+      parity_n > 1  ~ "gt1",
+      TRUE ~ NA_character_
+    ),
+    parity_n = factor(parity_n, levels = c("0", "1", "gt1"))
+  )|>
+  mutate(across(where(is.character), as.factor))
 
 #cotinine
 cotinine <- read_csv("~/Documents/k99_home/data/exposure_impu/imputed_exposures.csv") |>
