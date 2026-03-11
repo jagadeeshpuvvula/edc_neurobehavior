@@ -29,7 +29,8 @@ analy_df <- read_csv("~/Documents/k99_home/data/analytic_data_for_analysis.csv")
     "DNBP"           = DBuP,
     "DPHP"           = DPhP,
     "BDCIPP"         = BDCPP
-  )
+  ) |>
+  mutate(across(41:60, log2))
 ```
 
 #summaries of variables of interest
@@ -82,7 +83,6 @@ cor_matrix_melt <- melt(cor_matrix)
 
 # --- 3. Prepare Long Format (exposure-outcome pairs only) ---
 outcomes <- c("BASC-BSI", "BASC-EXT", "BASC-INZ")
-
 cor_long_filtered <- cor_matrix_melt %>%
   rename(correlation = value) %>%
   mutate(
@@ -90,12 +90,11 @@ cor_long_filtered <- cor_matrix_melt %>%
     Var2       = toupper(gsub("_", "-", as.character(Var2))),
     size_value = 1
   ) %>%
-  # Keep only pairs where exactly one variable is an outcome
+  # Keep only pairs where Var1 is an outcome and Var2 is NOT — eliminates the mirrored duplicate
   filter(
-    (Var1 %in% outcomes & !Var2 %in% outcomes) |
-    (!Var1 %in% outcomes & Var2 %in% outcomes)
+    Var1 %in% outcomes & !Var2 %in% outcomes
   ) %>%
-  # filter(abs(correlation) > 0.1) %>%   # uncomment to reduce clutter
+  filter(abs(correlation) > 0.02) %>%   # remove weak correlations
   select(Var1, Var2, size_value, correlation)
 
 # --- 4. Define Variable Groupings ---
@@ -190,8 +189,172 @@ invisible(dev.off())
 message(paste("Saved to:", output_file))
 ```
 
+#associations between EDC exposures and 12Y BASC outcomes
+#minimally adjusted model
+```{r}
+lm_res <- lm_func(
+  data = analy_df,
+  include_sex = TRUE,
+  include_cohort = FALSE,
+  independent_vars = c("PBDE100", "PBDE153", "PBDE47", "PBDE99",  "PBDE28",
+                "BCEP", "BDCIPP", "DNBP", "DPHP",
+                "BPA", "MBP", "MBZP", "MCPP", "MECPP", "MEHHP",
+                "MEHP", "MEOHP", "MEP", "MIBP"),
+  dependent_vars = c("`BASC-BSI`", "`BASC-EXT`", "`BASC-INZ`"),
+  covariates = c("Race", "income_group", "`HOME-Score`")
+)
 
+write_csv(lm_res, "~/Documents/k99_home/results/lm_res_min_adj.csv")
+```
 
+#visualize minimally adjusted results
+```{r}
+lm_res_viz <- read_csv("~/Documents/k99_home/results/lm_res_min_adj.csv") |>
+  filter(sex_level == "all") |>
+  select(c(1,2,5,6))
+
+# --- 1. Clean & Prepare Data ---
+lm_plot_df <- lm_res_viz %>%
+  mutate(
+    dependent_variable   = gsub("`", "", dependent_variable),
+    independent_variable = ifelse(p_value < 0.05,
+                                  paste0(independent_variable, "*"),
+                                  independent_variable),
+    size_value = 1
+  ) %>%
+  #filter(abs(coefficient) > 0.02) %>%
+  select(Var1 = dependent_variable,
+         Var2 = independent_variable,
+         size_value,
+         coefficient)
+
+# --- 2. Define Variable Groupings ---
+sig_vars <- lm_res_viz %>%
+  mutate(
+    label = ifelse(p_value < 0.05,
+                   paste0(independent_variable, "*"),
+                   independent_variable)
+  ) %>%
+  pull(label) %>%
+  unique()
+
+find_label <- function(base_names, sig_vars) {
+  sapply(base_names, function(nm) {
+    starred <- paste0(nm, "*")
+    if (starred %in% sig_vars) starred
+    else if (nm %in% sig_vars) nm
+    else nm
+  })
+}
+
+group_list <- list(
+  OPEs       = find_label(c("DPHP", "DNBP", "BCEP", "BDCIPP"), sig_vars),
+  PBDEs      = find_label(c("PBDE100", "PBDE153", "PBDE28", "PBDE47", "PBDE99"), sig_vars),
+  Phenols    = find_label(c("BPA"), sig_vars),
+  Phthalates = find_label(c("MBP", "MBZP", "MCPP", "MECPP", "MEHHP", "MEHP", "MEOHP", "MEP", "MIBP"), sig_vars),
+  Other      = find_label(c("COTININE"), sig_vars),
+  Covariates = find_label(c("HOME-SCORE", "MOM-AGE", "GEST-AGE"), sig_vars),
+  BASC       = c("BASC-BSI", "BASC-EXT", "BASC-INZ")
+)
+
+# --- 3. All sectors present in the chord data ---
+all_sectors <- unique(c(lm_plot_df$Var1, lm_plot_df$Var2))
+
+# --- 4. Build sector order: use group_list order, then append any unlisted sectors ---
+sector_order_filtered <- unlist(group_list, use.names = FALSE)
+sector_order_filtered <- sector_order_filtered[sector_order_filtered %in% all_sectors]  # keep only those in data
+
+# Append any sectors in data but missing from group_list (avoids the "order must contain all sectors" error)
+missing_sectors <- setdiff(all_sectors, sector_order_filtered)
+if (length(missing_sectors) > 0) {
+  message("Sectors in data but not in group_list (appended to end): ", paste(missing_sectors, collapse = ", "))
+  sector_order_filtered <- c(sector_order_filtered, missing_sectors)
+}
+
+# Final check — must match exactly
+stopifnot(setequal(sector_order_filtered, all_sectors))
+
+# --- 5. Color Assignment ---
+manual_palette <- c(
+  OPEs       = "olivedrab4",
+  PBDEs      = "mediumblue",
+  Phenols    = "#17BECF",
+  Phthalates = "green4",
+  Other      = "#FF00FF",
+  Covariates = "#7F7F7F",
+  BASC       = "darkgoldenrod3"
+)
+
+# Initialize named vector for ALL sectors (no NAs allowed for chordDiagram)
+grid_colors_final <- setNames(rep("grey70", length(all_sectors)), all_sectors)
+
+for (g_name in names(group_list)) {
+  match_vars <- group_list[[g_name]][group_list[[g_name]] %in% all_sectors]
+  grid_colors_final[match_vars] <- manual_palette[g_name]
+}
+
+# Subset and reorder to match sector_order_filtered exactly
+group_colors_filtered <- grid_colors_final[sector_order_filtered]
+
+# --- 6. Chord Color Scale ---
+coef_range <- max(abs(lm_plot_df$coefficient), na.rm = TRUE)
+
+col_fun <- colorRamp2(
+  c(-coef_range, 0, coef_range),
+  c("darkred", "#FFFFFF00", "darkblue")
+)
+
+# --- 7. Save Plot ---
+output_path <- path.expand("~/Documents/k99_home/results/")
+if (!dir.exists(output_path)) dir.create(output_path, recursive = TRUE)
+output_file <- paste0(output_path, "lm_coefficient_chord_diagram.tiff")
+
+tiff(output_file, res = 300, width = 12.5, height = 12.5, units = "in", bg = "white")
+par(mar = c(1, 1, 1, 1))
+circos.par(start.degree = 90, gap.degree = 2, track.margin = c(0.01, 0.01))
+
+chordDiagram(
+  lm_plot_df[, c("Var1", "Var2", "size_value")],
+  order             = sector_order_filtered,
+  transparency      = 0,
+  col               = col_fun(lm_plot_df$coefficient),
+  annotationTrack   = "grid",
+  grid.col          = group_colors_filtered,   # named vector, all sectors covered
+  preAllocateTracks = list(track.height = 0.1),
+  directional       = 0,
+  symmetric         = TRUE,
+  reduce            = 0
+)
+
+# --- 8. Label Track with Bold Stars for Significant Variables ---
+circos.track(
+  track.index = 1,
+  panel.fun = function(x, y) {
+    xlim        <- get.cell.meta.data("xlim")
+    ylim        <- get.cell.meta.data("ylim")
+    sector.name <- get.cell.meta.data("sector.index")
+    label_color <- group_colors_filtered[sector.name]
+    is_sig      <- grepl("\\*$", sector.name)
+
+    circos.text(
+      mean(xlim), ylim[1] + 0.1,
+      sector.name,
+      facing     = "clockwise",
+      niceFacing = TRUE,
+      adj        = c(0, 0.5),
+      cex        = ifelse(is_sig, 1.0, 0.9),
+      col        = label_color,
+      font       = ifelse(is_sig, 2, 1)
+    )
+  },
+  bg.border = NA
+)
+
+circos.clear()
+invisible(dev.off())
+
+message(paste("Saved to:", output_file))
+```
 
 
 
