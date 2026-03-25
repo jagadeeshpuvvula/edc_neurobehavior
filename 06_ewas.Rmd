@@ -1,0 +1,198 @@
+---
+title: "06_ewas"
+author: "Jagadeesh Puvvula"
+date: "2026-03-11"
+output: pdf_document
+---
+
+```{r}
+analy_df <- read_csv("~/Documents/k99_home/data/analytic_data_for_analysis.csv") |>
+  select(-c(visit))  |>
+  select(-c(2:27))|>
+  mutate(across(where(is.character), as.factor),
+         parity_n = as.factor(parity_n)) |>
+  rename(
+    # BASC
+    "BASC-BSI"       = basc_bsi,
+    "BASC-EXT"       = basc_ext,
+    "BASC-INZ"       = basc_inz,
+    # Covariates
+    "Sex"            = sex,
+    "Race"           = race,
+    "Marital-Status" = mari_st,
+    "Mom-Education"  = mom_edu,
+    "HOME-Score"     = home_score_total,
+    "Mom-Age"        = mom_age_deliv,
+    "Gest-Age"       = gest_age,
+    # OPEs
+    #"BCEP"           = BCEtP,
+    #"DNBP"           = DBuP,
+    #"DPHP"           = DPhP,
+    #"BDCIPP"         = BDCPP
+  ) |>
+  mutate(across(15:64, log2)) |>
+  clean_names() 
+```
+
+#load preprocessed methylation and cell proportion data
+```{r}
+load("~/Documents/k99_home/new/beta.rda")
+
+pheno_data<- read_csv("~/Documents/k99_home/pheno_data.csv") |> 
+  rename(subject_id = participant_id) |>
+  filter(subject_id %in% analy_df$subject_id)
+
+beta_filtered <- beta[, colnames(beta) %in% pheno_data$basename]
+  
+cell_proportions_idol <- read_csv("~/Documents/k99_home/dnam_prep_data/cell_proportions_idol.csv") |> 
+  rename(subject_id = participant_id) |>
+  filter(subject_id %in% pheno_data$subject_id)
+
+rm(beta);gc()
+```
+
+#drop participants with missing epigenetic data
+```{r}
+analy_df_ewas <- analy_df |> filter(subject_id %in% pheno_data$subject_id) |>
+  left_join(pheno_data |> select(subject_id, basename), by = "subject_id") |>
+  left_join(cell_proportions_idol, by = "subject_id") |>
+  clean_names() |>
+  select(-c(basename_x, batch)) |>
+  rename(basename = basename_y)
+```
+
+#run ewas
+```{r}
+ewas_loop_pll(
+  exposures = c(
+    "pbde100_avg","pbde153_avg","pbde47_avg","pbde99_avg","pbde28_avg",
+    
+    "mbp_16w","mbzp_16w","mcpp_16w","mecpp_16w","mehhp_16w",
+    "mehp_16w","meohp_16w","mep_16w","mibp_16w",
+
+    "mbp_26w","mbzp_26w","mcpp_26w","mecpp_26w","mehhp_26w",
+    "mehp_26w","meohp_26w","mep_26w","mibp_26w",
+
+    "mbp_avg","mbzp_avg","mcpp_avg","mecpp_avg","mehhp_avg",
+    "mehp_avg","meohp_avg","mep_avg","mibp_avg",
+    
+    "d_bu_p_16w","bdcpp_16w","d_ph_p_16w","bc_et_p_16w",
+    "bdcpp_26w","d_bu_p_26w","d_ph_p_26w","bc_et_p_26w",
+    "bc_et_p_avg","bdcpp_avg","d_bu_p_avg","d_ph_p_avg"
+    ),
+  covariates = c("race", "income_group", "home_score",
+                 "cd8t", "cd4t", "nk", "bcell", "mono", "gran", "n_rbc"),
+  bVals_list  = list(beta_filtered),
+  bVals_names = c("beta_filtered"),
+  dat_pheno   = analy_df_ewas,
+  outputFolder = "~/Documents/k99_home/results/ewas_results",
+  fdr_thresholds  = c(0.20, 0.10, 0.05),
+  pval_thresholds = c(7.01e-08)
+  )
+```
+
+#extract significant results
+```{r}
+path <- "~/Documents/k99_home/results/ewas_results/"
+
+files <- list.files(path, pattern = "\\.rds$|\\.rda$", full.names = TRUE)
+
+df_final <- map_dfr(files, function(f) {
+    
+    # ---- Load file ----
+    if (str_detect(f, "\\.rds$")) {
+        x <- readRDS(f)
+    } else {
+        env <- new.env()
+        load(f, envir = env)
+        x <- env[[ls(env)[1]]]
+    }
+    
+    # ---- Threshold ----
+    threshold <- if (str_detect(f, "Male|Female")) 0.05 else 0.05
+    
+    # ---- Filename info ----
+    fname <- basename(f)
+    exposure <- str_extract(fname, "(?<=ewas_).*?(?=_beta)")
+    sex <- str_extract(fname, "Male|Female")
+    
+    # ---- Tables ----
+    y <- x$results
+    
+    # coefficients table (adjust name if needed)
+    z <- x$coefficients |>
+        rownames_to_column("CPG.Labels")
+    
+    # ---- Merge + filter ----
+    res <- y |>
+        filter(FDR < threshold) |>
+        left_join(z, by = "CPG.Labels") |>
+        mutate(
+            exposure = exposure,
+            sex = sex,
+            file = fname
+        )
+    
+    return(res)
+})
+
+#export significant results
+write_csv(df_final, "~/Documents/k99_home/results/ewas_significant_cpgs.csv")
+```
+
+#explore and visualize results
+```{r}
+cpg_viz <- df_final |>
+  clean_names() |>
+  mutate(
+    sex = coalesce(sex, "All"),
+    exposure_window = word(exposure, -1, sep = "_"),
+    exposure = str_remove(exposure, paste0("_", exposure_window, "$")),
+    exposure = recode(exposure,
+      bc_et_p = "BCEP", bdcpp   = "BDCIPP", d_bu_p  = "DNBP", d_ph_p  = "DPHP",
+      mbp     = "MBP", mbzp    = "MBZP", mcpp    = "MCPP", mecpp   = "MECPP",
+      mehhp   = "MEHHP", mehp    = "MEHP", meohp   = "MEOHP", mibp    = "MiBP",
+      pbde47  = "PBDE47"
+    )) |>
+  select(c(1, 5, 10:13, 15))
+
+#overall counts
+cpg_counts <- cpg_viz |>
+    mutate(
+        chemical = exposure,
+        window = case_when(
+            exposure_window == "16w" ~ "16W",
+            exposure_window == "26w" ~ "26W",
+            str_detect(exposure_window, "avg") ~ "Average",
+            TRUE ~ exposure_window
+        ),
+        sex = case_when(
+            sex == "All" ~ "Overall",
+            TRUE ~ sex
+        )
+    ) |>
+    distinct(cpg_labels, chemical, window, sex) |>
+    count(chemical, window, sex, name = "unique_cpgs") |>
+    pivot_wider(names_from = sex, values_from = unique_cpgs, 
+                values_fill = 0) |>
+    arrange(chemical, window) |>
+  select(c(1,2,5,3,4))
+
+
+#summary
+cpg_summary <- cpg_viz |>
+    mutate(combo = str_c(exposure, exposure_window, sex, sep = "_")) |>
+    group_by(cpg_labels) |>
+    summarise(
+        repeat_times = n(),
+        combinations = str_c(sort(unique(combo)), collapse = "; ")
+    ) |>
+    ungroup() |>
+  filter(repeat_times > 1)
+```
+
+
+
+
+
+

@@ -43,7 +43,7 @@ subject_check <- meta |>
 ```{r}
 basc<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
   janitor::clean_names() |>
-  filter(visit %in% c("P3", "P4")) |>
+  filter(visit %in% c("P4")) |>
   select(1, 2, starts_with("basc"))
 
 #93 participants with DNAm data do not have BASC data
@@ -248,22 +248,21 @@ write_csv(Zhou_tbl, "~/Documents/k99_home/arzu_cpgs_to_drop/cpgs_to_keep.csv")
 #process
 ```{r}
 process_methylation_data(
-  basenames_df = basenames_df_t, 
-  pheno_data = pheno_data_matched_t, 
-  output_folder = "~/Documents/k99_home/dnam_prep_data", 
-  array_type = "EPIC",  
-  detection_pval = 1e-6,
-  beadcount_threshold = 3,
-  sample_cutoff = 0.05,
-  probe_detection_rate = 0.95,
-  bisulfite_sd_threshold = 3,
-  cpgs_to_keep_file = "~/Documents/k99_home/arzu_cpgs_to_drop/cpgs_to_keep.csv",
-  compute_mvalues = FALSE,
-  apply_bmiq = TRUE,
-  apply_combat = TRUE,
-  batch_variable = "batch",
+  basenames_df              = basenames_df_t,
+  pheno_data                = pheno_data_matched_t,
+  output_folder             = "~/Documents/k99_home/new",
+  array_type                = "EPIC",
+  detection_pval            = 1e-6,
+  beadcount_threshold       = 3,
+  sample_cutoff             = 0.05,
+  bisulfite_mad_threshold   = 15,
+  cpgs_to_keep_file         = "~/Documents/k99_home/arzu_cpgs_to_drop/cpgs_to_keep.csv",
+  compute_mvalues           = FALSE,
+  apply_bmiq                = TRUE,
+  apply_combat              = TRUE,
+  batch_variable            = "batch",
   estimate_cell_proportions = TRUE,
-  verbose = TRUE
-)
+  verbose                   = TRUE
+  )
 ```
 

@@ -31,22 +31,27 @@ cov<- read_csv("~/Documents/k99_home/data/covariate_imputation.csv") |>
 
 #cotinine
 cotinine <- read_csv("~/Documents/k99_home/data/exposure_impu/imputed_exposures.csv") |>
-  filter(exposure == "cotinine")|>
-  mutate(
-    analyte = str_split_fixed(analyte_visit, "_", 2)[,1],
-    visit   = str_split_fixed(analyte_visit, "_", 2)[,2]
-  ) |>
-  select(subject_id, analyte, visit, result) |>
-  group_by(subject_id, analyte) |>
-  summarise(
-    result = if (n_distinct(visit) == 2) {
-      mean(result, na.rm = TRUE)
-    } else {
-      result[1]
-    },
-    .groups = "drop"
-  ) |>
-  mutate(subject_id = as.factor(subject_id))
+    filter(exposure == "cotinine") |>
+    mutate(
+        analyte = str_split_fixed(analyte_visit, "_", 2)[,1],
+        visit   = str_split_fixed(analyte_visit, "_", 2)[,2]
+    ) |>
+    select(subject_id, analyte, visit, result)
+
+# Create average rows
+avg_rows <- cotinine |>
+    group_by(subject_id, analyte) |>
+    summarise(
+        result = mean(result, na.rm = TRUE),
+        visit = "avg",
+        .groups = "drop"
+    )
+
+# Combine visit-level and average rows
+cotinine <- bind_rows(cotinine, avg_rows) |>
+    mutate(subject_id = as.factor(subject_id),
+           exposure = "cotinine") 
+  
 ```
 
 #exposure markers - PBDEs (230)
@@ -70,7 +75,11 @@ pbde_df <- haven::read_sas("~/Documents/data/pbde.sas7bdat") |> clean_names() |>
     .groups = "drop"
   ) |>
   filter(subject_id %in% basc_out$subject_id) |> clean_names() |>
-  rename(analyte = analyte_code) 
+  rename(analyte = analyte_code) |>
+  mutate(
+    exposure = "PBDE",
+    visit = "avg"
+  )
 ```
 
 #exposure markers - OPE and Phthalates
@@ -82,39 +91,42 @@ ur_sg<- read_sas("~/Documents/data/fr.sas7bdat") |> clean_names() |>
   filter(subject_id %in% basc_out$subject_id)
 
 #12 participants with missing SG were imputed using the mean SG for that visit.
-ope_phth<- read_csv("~/Documents/k99_home/data/exposure_impu/imputed_exposures.csv") |>
+ope_phth <- read_csv("~/Documents/k99_home/data/exposure_impu/imputed_exposures.csv") |>
   filter(exposure != "cotinine") |>
   mutate(
-    analyte = str_split_fixed(analyte_visit, "_", 2)[,1],
-    visit   = str_split_fixed(analyte_visit, "_", 2)[,2]
+    analyte = str_replace(analyte_visit, "_[^_]+$", ""),
+    visit   = str_extract(analyte_visit, "[^_]+$")
   ) |>
   left_join(ur_sg, by = c("subject_id", "visit")) |>
   group_by(visit) |>
   mutate(
     specific_gravity = if_else(
       is.na(specific_gravity),
-      mean(specific_gravity, na.rm = TRUE),
+      median(specific_gravity, na.rm = TRUE),
       specific_gravity
+    ),
+    result_sg_adj = if_else(
+      specific_gravity == 1,
+      NA_real_,
+      result * ((median(specific_gravity, na.rm = TRUE) - 1) / (specific_gravity - 1))
     )
   ) |>
   ungroup() |>
-  group_by(visit) |>
-  mutate(
-    result_sg_adj = result * ((median(specific_gravity, na.rm = TRUE) - 1) /
-                              (specific_gravity - 1))
-  ) |>
-  ungroup() |>
-  select(subject_id, exposure, analyte, visit, result_sg_adj)  |>
-  group_by(subject_id, analyte) |>
+  select(subject_id, exposure, analyte, visit, result_sg_adj)
+
+# Create average rows
+avg_rows <- ope_phth |>
+  group_by(subject_id, exposure, analyte) |>
   summarise(
-    result = if (n_distinct(visit) == 2) {
-      mean(result_sg_adj, na.rm = TRUE)
-    } else {
-      result_sg_adj[1]
-    },
+    result_sg_adj = mean(result_sg_adj, na.rm = TRUE),
+    visit = "avg",
     .groups = "drop"
-  ) |>
-  mutate(subject_id = as.factor(subject_id))
+  )
+
+# Combine visit-level and average rows
+ope_phth <- bind_rows(ope_phth, avg_rows) |>
+  mutate(subject_id = as.factor(subject_id)) |>
+  rename(result = result_sg_adj)
 ```
 
 #join all exposures
@@ -130,7 +142,8 @@ save(basc_out, cov, exposures, file = "~/Documents/k99_home/data/analytic_data_t
 #final data for analysis
 ```{r}
 exp_wide<- exposures |> 
-  pivot_wider(names_from = analyte, values_from = result)
+   select(-exposure) |>
+  pivot_wider(names_from = c(analyte, visit), values_from = result)
 
 dat_full <- basc_out |>
   mutate(subject_id = as.factor(subject_id)) |>
