@@ -142,7 +142,23 @@ write_csv(df_final, "~/Documents/k99_home/results/ewas_significant_cpgs.csv")
 
 #explore and visualize results
 ```{r}
-cpg_viz <- df_final |>
+ewas_lambda <- read_csv("~/Documents/k99_home/results/ewas_results/ewas_summary.csv") |>
+  select(c(1,3:5)) |>
+  mutate(stratum = recode(stratum,
+                          "sex=Female" = "Female",
+                          "sex=Male"   = "Male",
+                          "Overall"    = "All"),
+         exposure_window = word(exposure, -1, sep = "_"),
+    exposure = str_remove(exposure, paste0("_", exposure_window, "$")),
+    exposure = recode(exposure,
+      bc_et_p = "BCEP", bdcpp   = "BDCIPP", d_bu_p  = "DNBP", d_ph_p  = "DPHP",
+      mbp     = "MBP", mbzp    = "MBZP", mcpp    = "MCPP", mecpp   = "MECPP",
+      mehhp   = "MEHHP", mehp    = "MEHP", meohp   = "MEOHP", mibp    = "MiBP",
+      pbde47  = "PBDE47"
+    )) |>
+  rename(sex = stratum)
+
+cpg_viz <- read_csv("~/Documents/k99_home/results/ewas_significant_cpgs.csv") |>
   clean_names() |>
   mutate(
     sex = coalesce(sex, "All"),
@@ -155,31 +171,69 @@ cpg_viz <- df_final |>
       pbde47  = "PBDE47"
     )) |>
   select(c(1, 5, 10:13, 15))
+```
 
 #overall counts
-cpg_counts <- cpg_viz |>
-    mutate(
-        chemical = exposure,
-        window = case_when(
-            exposure_window == "16w" ~ "16W",
-            exposure_window == "26w" ~ "26W",
-            str_detect(exposure_window, "avg") ~ "Average",
-            TRUE ~ exposure_window
-        ),
-        sex = case_when(
-            sex == "All" ~ "Overall",
-            TRUE ~ sex
-        )
-    ) |>
-    distinct(cpg_labels, chemical, window, sex) |>
-    count(chemical, window, sex, name = "unique_cpgs") |>
-    pivot_wider(names_from = sex, values_from = unique_cpgs, 
-                values_fill = 0) |>
-    arrange(chemical, window) |>
-  select(c(1,2,5,3,4))
+```{r}
+# Prep lambda table (match formatting exactly)
+lambda_tbl <- ewas_lambda %>%
+  mutate(
+    window = case_when(
+      exposure_window == "16w" ~ "16W",
+      exposure_window == "26w" ~ "26W",
+      str_detect(exposure_window, "avg") ~ "Average",
+      TRUE ~ exposure_window
+    ),
+    sex = case_when(
+      sex %in% c("All", "Overall") ~ "Overall",
+      sex %in% c("sex=Female", "Female") ~ "Female",
+      sex %in% c("sex=Male", "Male") ~ "Male",
+      TRUE ~ sex
+    )
+  ) %>%
+  select(exposure, window, sex, n, lambda)
 
+# Main table
+cpg_counts <- cpg_viz %>%
+  mutate(
+    window = case_when(
+      exposure_window == "16w" ~ "16W",
+      exposure_window == "26w" ~ "26W",
+      str_detect(exposure_window, "avg") ~ "Average",
+      TRUE ~ exposure_window
+    ),
+    sex = case_when(
+      sex == "All" ~ "Overall",
+      TRUE ~ sex
+    )
+  ) %>%
+  distinct(cpg_labels, exposure, window, sex) %>%
+  count(exposure, window, sex, name = "unique_cpgs") %>%
+  
+  # Join in n + lambda
+  left_join(lambda_tbl, by = c("exposure", "window", "sex")) %>%
+  
+  # Format output
+  mutate(
+    formatted = if_else(
+      is.na(n) | is.na(lambda),
+      as.character(unique_cpgs),
+      paste0(
+        unique_cpgs,
+        " (n=", n,
+        " | \u03BB=", sprintf("%.3f", lambda), ")"
+      )
+    )
+  ) %>%
+  
+  select(exposure, window, sex, formatted) %>%
+  pivot_wider(names_from = sex, values_from = formatted) %>%
+  arrange(exposure, window) %>%
+  select(exposure, window, Overall, Male, Female)
+```
 
-#summary
+#summary of overlapping cpgs
+```{r}
 cpg_summary <- cpg_viz |>
     mutate(combo = str_c(exposure, exposure_window, sex, sep = "_")) |>
     group_by(cpg_labels) |>
