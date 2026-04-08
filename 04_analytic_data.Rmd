@@ -7,10 +7,17 @@ output: pdf_document
 
 #12Y BASC outcome data (242)
 ```{r}
-basc_out<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
+basc_prt_out<- read_sas("~/Documents/data/outcomes.sas7bdat") |>
   clean_names() |>
   select(1, 2, starts_with("basc")) |>
-  filter(visit == "P4")
+  filter(visit == "P4") |>
+  select(c(1,basc_inz))
+
+basc_chld_out<- read_sas("~/Documents/data/basc_child_add.sas7bdat") |>
+  clean_names() |>
+  select(1, 2, starts_with("basc")) |>
+  filter(visit == "P4") |>
+  select(c(1,basc_child_inz_gc_t))
 ```
 
 #imputed covariate data 
